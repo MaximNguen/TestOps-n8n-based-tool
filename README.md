@@ -1,4 +1,4 @@
-# custom-n8n
+# TestOps n8n-based Tool
 
 Мини-движок автоматизации в стиле n8n для QA-процессов.
 
