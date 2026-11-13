@@ -58,6 +58,10 @@ export const api = {
   run: (id: string) => request<Run>(`/api/runs/${id}`),
   cancelRun: (id: string) =>
     request<{ canceled: boolean }>(`/api/runs/${id}/cancel`, { method: "POST" }),
+  retryNode: (runId: string, nodeId: string) =>
+    request<{ runId: string }>(`/api/runs/${runId}/retry/${nodeId}`, {
+      method: "POST",
+    }),
   credentials: () => request<CredentialSummary[]>("/api/credentials"),
   createCredential: (name: string, type: string, data: Record<string, unknown>) =>
     request<CredentialSummary>("/api/credentials", {

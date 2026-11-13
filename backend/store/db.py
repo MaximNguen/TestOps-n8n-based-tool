@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS runs (
     data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_workflow ON runs(workflow_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS node_inputs (
+    run_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, node_id)
+);
 """
 
 
@@ -233,6 +240,41 @@ class Database:
             )
             self._conn.commit()
 
+    def save_node_input(self, run_id: str, node_id: str, items: list[Item]) -> None:
+        payload = json.dumps(
+            [item.to_dict() for item in items],
+            ensure_ascii=False,
+            default=str,
+        )
+        if len(payload) > 4_000_000:
+            payload = json.dumps(
+                {"truncated": True, "size": len(payload)},
+                ensure_ascii=False,
+            )
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO node_inputs (run_id, node_id, data, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(run_id, node_id) DO UPDATE SET data = excluded.data
+                """,
+                (run_id, node_id, payload, utcnow()),
+            )
+            self._conn.commit()
+
+    def get_node_input(self, run_id: str, node_id: str) -> list[dict[str, Any]] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT data FROM node_inputs WHERE run_id = ? AND node_id = ?",
+                (run_id, node_id),
+            ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        if isinstance(data, dict):
+            return None
+        return data if isinstance(data, list) else None
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute("SELECT data FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -252,6 +294,29 @@ class Database:
         return [json.loads(row["data"]) for row in rows]
 
     # ---------- helpers ----------
+
+    def cancel_stale_listener_runs(self) -> int:
+        now = utcnow()
+        canceled = 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, data FROM runs WHERE status = 'running'"
+            ).fetchall()
+            for row in rows:
+                data = json.loads(row["data"])
+                if data.get("trigger") != "file-listener":
+                    continue
+                data["status"] = "canceled"
+                data["error"] = "Engine restarted"
+                data["finishedAt"] = now
+                self._conn.execute(
+                    "UPDATE runs SET status = 'canceled', finished_at = ?, data = ? WHERE id = ?",
+                    (now, json.dumps(data, ensure_ascii=False, default=str), row["id"]),
+                )
+                canceled += 1
+            if canceled:
+                self._conn.commit()
+        return canceled
 
     def count_workflows(self) -> int:
         with self._lock:

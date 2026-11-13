@@ -32,9 +32,11 @@ interface FlowNodeData extends Record<string, unknown> {
   disabled: boolean;
   status: string;
   outputs: string[];
+  error: string;
+  onRetry?: (nodeId: string) => void;
 }
 
-function FlowNode({ data, selected }: NodeProps) {
+function FlowNode({ data, selected, id }: NodeProps) {
   const node = data as unknown as FlowNodeData;
   return (
     <div
@@ -48,6 +50,18 @@ function FlowNode({ data, selected }: NodeProps) {
         .filter(Boolean)
         .join(" ")}
     >
+      {node.status === "error" && node.onRetry && (
+        <button
+          className="node-retry"
+          title="Retry this node"
+          onClick={(event) => {
+            event.stopPropagation();
+            node.onRetry?.(id);
+          }}
+        >
+          Retry
+        </button>
+      )}
       {!node.isTrigger && <Handle type="target" position={Position.Left} id="in" />}
       <div className="flow-node-head">
         <span className="flow-node-dot" />
@@ -78,6 +92,11 @@ function FlowNode({ data, selected }: NodeProps) {
       {node.outputs.length > 1 && (
         <div className="flow-node-branches">{node.outputs.join(" / ")}</div>
       )}
+      {node.error && (
+        <div className="flow-node-error" title={node.error}>
+          {node.error.length > 160 ? `${node.error.slice(0, 160)}...` : node.error}
+        </div>
+      )}
     </div>
   );
 }
@@ -93,6 +112,7 @@ interface FlowCanvasProps {
   onNodeMove: (id: string, position: { x: number; y: number }) => void;
   onDeleteNodes: (ids: string[]) => void;
   onConnectionsChange: (connections: Connection[]) => void;
+  onRetryNode: (nodeId: string) => void;
 }
 
 function nodeRunFor(run: Run | null, nodeId: string): NodeRun | undefined {
@@ -104,6 +124,7 @@ function makeNode(
   catalogMap: Map<string, NodeCatalogEntry>,
   run: Run | null,
   selectedNodeId: string | null,
+  onRetryNode: (nodeId: string) => void,
   position?: { x: number; y: number },
 ): Node {
   const definition = catalogMap.get(node.type);
@@ -116,6 +137,8 @@ function makeNode(
     disabled: Boolean(node.disabled),
     status: nodeRun?.status ?? "idle",
     outputs: definition?.outputs ?? ["main"],
+    error: nodeRun?.error ?? "",
+    onRetry: onRetryNode,
   };
   return {
     id: node.id,
@@ -148,6 +171,7 @@ export function FlowCanvas({
   onNodeMove,
   onDeleteNodes,
   onConnectionsChange,
+  onRetryNode,
 }: FlowCanvasProps) {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -159,7 +183,9 @@ export function FlowCanvas({
 
   useEffect(() => {
     setNodes(
-      workflow.nodes.map((node) => makeNode(node, catalogMap, run, selectedNodeId)),
+      workflow.nodes.map((node) =>
+        makeNode(node, catalogMap, run, selectedNodeId, onRetryNode),
+      ),
     );
     setEdges(workflow.connections.map(toEdge));
     // Reset only when switching workflows.
@@ -175,12 +201,13 @@ export function FlowCanvas({
           catalogMap,
           run,
           selectedNodeId,
+          onRetryNode,
           byId.get(node.id)?.position ?? node.position,
         ),
       );
     });
     setEdges(workflow.connections.map(toEdge));
-  }, [workflow, catalogMap, run, selectedNodeId]);
+  }, [workflow, catalogMap, run, selectedNodeId, onRetryNode]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {

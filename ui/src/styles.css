@@ -901,7 +901,65 @@ textarea.field-input {
 }
 
 .flow-node.status-error {
-  border-color: #ef9a97;
+  border-color: var(--red);
+  box-shadow: 0 0 0 2px rgba(239, 71, 67, 0.18);
+}
+
+.flow-node {
+  position: relative;
+}
+
+.flow-node-error {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border: 1px solid #f5c2c0;
+  border-radius: 4px;
+  background: #fdecea;
+  color: #b42318;
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 52px;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.node-retry {
+  position: absolute;
+  top: -13px;
+  right: -6px;
+  z-index: 5;
+  padding: 3px 10px;
+  border: 1px solid var(--red);
+  border-radius: 999px;
+  background: var(--red);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 6px rgba(16, 24, 40, 0.2);
+}
+
+.node-retry:hover:not(:disabled) {
+  background: #c93b37;
+  border-color: #c93b37;
+}
+
+.retry-settings {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.retry-settings h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.retry-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .flow-node-head {

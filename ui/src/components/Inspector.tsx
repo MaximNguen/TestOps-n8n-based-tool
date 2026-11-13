@@ -210,6 +210,9 @@ export function Inspector({
     definition?.isTrigger && typeof parameters.path === "string"
       ? parameters.path
       : null;
+  const isAiNode =
+    node.type.startsWith("ai.") ||
+    (node.type === "qa.testPlan" && parameters.mode === "llm");
 
   return (
     <div className="inspector">
@@ -264,6 +267,52 @@ export function Inspector({
           />
           <span>Disabled (pass items through)</span>
         </label>
+
+        <div className="retry-settings">
+          <h3>Retry</h3>
+          <div className="retry-row">
+            <label className="field">
+              <span className="field-label">Max attempts</span>
+              <input
+                className="field-input"
+                type="number"
+                min={1}
+                placeholder={isAiNode ? "5" : "1"}
+                value={node.retryMaxAttempts ?? ""}
+                onChange={(event) =>
+                  onChange(node.id, {
+                    retryMaxAttempts:
+                      event.target.value === ""
+                        ? null
+                        : Math.max(1, Number(event.target.value)),
+                  })
+                }
+              />
+            </label>
+            <label className="field">
+              <span className="field-label">Delay (sec)</span>
+              <input
+                className="field-input"
+                type="number"
+                min={0}
+                placeholder={isAiNode ? "10" : "0"}
+                value={node.retryDelaySeconds ?? ""}
+                onChange={(event) =>
+                  onChange(node.id, {
+                    retryDelaySeconds:
+                      event.target.value === ""
+                        ? null
+                        : Math.max(0, Number(event.target.value)),
+                  })
+                }
+              />
+            </label>
+          </div>
+          <span className="field-hint">
+            AI-ноды по умолчанию: 5 попыток с паузой 10 секунд. Остальные ноды:
+            1 попытка, если не указать иное.
+          </span>
+        </div>
 
         {(definition?.properties ?? []).map((property) => (
           <div key={property.name}>

@@ -30,6 +30,8 @@ export interface WorkflowNode {
   position: { x: number; y: number };
   parameters: JsonObject;
   disabled?: boolean;
+  retryMaxAttempts?: number | null;
+  retryDelaySeconds?: number | null;
 }
 
 export interface Connection {
@@ -89,6 +91,20 @@ export type RunEvent =
   | { type: "snapshot"; run: Run }
   | { type: "run.start"; run: Run }
   | { type: "run.end"; run: Run }
-  | { type: "node.start"; runId: string; nodeId: string; nodeName: string; nodeType: string }
-  | { type: "node.end"; runId: string; nodeRun: NodeRun }
-  | { type: "log"; runId: string; nodeId?: string; level: string; message: string };
+  | {
+      type: "node.start";
+      runId: string;
+      nodeId: string;
+      nodeName: string;
+      nodeType: string;
+      childRunId?: string;
+    }
+  | { type: "node.end"; runId: string; nodeRun: NodeRun; childRunId?: string }
+  | {
+      type: "log";
+      runId: string;
+      nodeId?: string;
+      level: string;
+      message: string;
+      childRunId?: string;
+    };

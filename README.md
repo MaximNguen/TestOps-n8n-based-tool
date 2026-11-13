@@ -14,7 +14,7 @@
 ## Возможности
 
 - Workflow как DAG: ноды, связи, ветвления, выражения.
-- Триггеры: manual, webhook, cron, приём результатов автотестов.
+- Триггеры: manual, webhook, cron, приём результатов автотестов, автоподхват файлов из папки.
 - QA-ноды: OpenAPI -> тест-кейсы, тест-план, прогон коллекции, AI-резюме,
   Markdown/HTML-отчёт, публикация в файл, Slack, Telegram, Confluence, Jira.
 - AI-провайдеры: opencode CLI, DeepSeek API, Anthropic Claude API,
@@ -230,6 +230,7 @@ OpenAPI cases -> Test plan -> Run Postman collection -> Summarize -> Report -> P
 | `trigger.webhook` | HTTP-триггер `POST /webhook/<path>` |
 | `trigger.schedule` | Запуск по cron |
 | `trigger.testResults` | Приём результатов автотестов и мгновенный разбор |
+| `trigger.testResultsFile` | Автоподхват новых отчётов из папки |
 | `core.set` | Добавление и перезапись полей |
 | `core.if` | Ветвление по условию (true/false) |
 | `core.code` | Python-код для нестандартной логики |
@@ -279,6 +280,98 @@ OpenAPI cases -> Test plan -> Run Postman collection -> Summarize -> Report -> P
 
 `ai.summarizeResults` добавляет к этому LLM-нарратив, если провайдер настроен.
 Ошибка AI не ломает workflow: остаётся эвристический отчёт.
+
+### pytest -> JSON
+
+Установите плагин и запустите тесты:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pytest-json-report
+.\.venv\Scripts\python.exe -m pytest --json-report --json-report-file=results.json
+```
+
+`trigger.testResults` понимает этот формат напрямую: берет `nodeid`, `outcome`,
+текст assertion из `call.crash.message`, длительности фаз и строит отчёт.
+Альтернатива без плагина: `pytest --junitxml=results.xml` и отправить XML.
+
+Отправка результатов в движок:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:5678/webhook/qa/test-results" `
+  -H "Content-Type: application/json" `
+  --data-binary "@results.json"
+```
+
+### Передача результатов в n8n
+
+1. В n8n создайте workflow с нодой Webhook: метод POST, путь `pytest-results`.
+2. Для отладки возьмите Test URL из ноды, для постоянной работы - Production URL.
+3. Отправьте JSON:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:5679/webhook-test/pytest-results" `
+  -H "Content-Type: application/json" `
+  --data-binary "@results.json"
+```
+
+В n8n тело запроса обычно доступно как `$json.body`. Пример Code-ноды:
+
+```javascript
+const report = $json.body ?? $json;
+const tests = report.tests ?? report.results ?? [];
+const failed = tests.filter((test) => {
+  if (typeof test.passed === "boolean") return !test.passed;
+  return test.outcome && test.outcome !== "passed";
+});
+return [{ json: { total: tests.length, failed: failed.length, report } }];
+```
+
+Если n8n должен вызывать движок, используйте HTTP Request на
+`http://host.docker.internal:5678/webhook/qa/test-results`.
+
+### Режим слушателя: testResultsFile
+
+Нода `trigger.testResultsFile` работает как постоянный слушатель:
+
+1. Вы один раз запускаете workflow кнопкой Run.
+2. Запуск переходит в режим ожидания и не завершается сам.
+3. Каждые 10 секунд проверяется папка с отчётами.
+4. Файлы, которые уже лежали в папке на момент запуска, игнорируются.
+5. Новый/изменённый файл обрабатывается: строится AI-резюме и отчёт.
+6. Таймаута нет. Остановить можно кнопкой Cancel или отключением workflow
+   (active=false и Save).
+
+Параметры:
+
+- `directory` - папка с отчётами, абсолютная или относительно корня проекта.
+- `patterns` - маски через запятую, например `results*.json,*.xml,newman*.json`.
+- `source` - `auto`, `pytest`, `generic`, `junit`, `newman`.
+- `intervalSeconds` - период опроса, по умолчанию 10 секунд.
+
+Пример: `examples/file-watch-pipeline.workflow.json`.
+
+Порядок работы:
+
+1. Импортируйте пример.
+2. Нажмите Run workflow один раз. Запуск останется в статусе running.
+3. Запустите pytest с отчётом в папку слушателя:
+
+```powershell
+pytest --json-report --json-report-file=data/inbox/results.json
+```
+
+4. Через 10-20 секунд слушатель подхватит файл, выполнит workflow и создаст отчёт.
+5. Чтобы остановить, нажмите Cancel или отключите workflow.
+
+Ограничения:
+
+- движок должен быть запущен;
+- после перезапуска движка слушатель нужно запустить снова кнопкой Run;
+- старые файлы игнорируются всегда;
+- в Docker папка должна быть смонтирована внутрь контейнера, а `directory`
+  должен указывать на путь внутри контейнера;
+- для максимальной надёжности в CI лучше отправлять отчёт webhook-ом, а не
+  полагаться на файловый слушатель.
 
 ---
 
@@ -546,6 +639,30 @@ vLLM и другие OpenAI-совместимые серверы: укажит�
 возвращает понятную ошибку.
 
 ---
+
+## Retry и повтор ноды
+
+У каждой ноды есть настройки Retry в инспекторе:
+
+- Max attempts - сколько раз выполнять ноду при ошибке.
+- Delay (sec) - пауза между попытками.
+
+Значения по умолчанию:
+
+- AI-ноды: 5 попыток с паузой 10 секунд;
+- остальные ноды: 1 попытка, если не указать иное.
+
+Если AI не отвечает, нода делает 5 попыток. После последней неудачи:
+
+- нода обводится красным;
+- показывается текст ошибки;
+- над нодой справа появляется кнопка Retry.
+
+Retry повторяет только эту ноду и следующие за ней, используя сохранённый вход
+неудачного запуска. Заново запускать весь workflow не нужно. Вход ноды хранится
+в SQLite; если он больше 4 МБ, повтор недоступен, нужно запустить workflow заново.
+
+Для listener-режима Retry применяется к дочернему запуску, в котором упала нода.
 
 ## Пайплайн QA
 

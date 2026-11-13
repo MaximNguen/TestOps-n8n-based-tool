@@ -8,6 +8,7 @@ from typing import Any
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = defaultdict(set)
+        self._callbacks: dict[str, set[Any]] = defaultdict(set)
         self._all: set[asyncio.Queue[dict[str, Any]]] = set()
 
     def publish(self, event: dict[str, Any]) -> None:
@@ -23,11 +24,27 @@ class EventBus:
                     queue.put_nowait(event)
                 except (asyncio.QueueEmpty, asyncio.QueueFull):
                     pass
+        if run_id:
+            for callback in list(self._callbacks.get(run_id, set())):
+                try:
+                    callback(event)
+                except Exception:
+                    pass
 
     async def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=2000)
         self._subscribers[run_id].add(queue)
         return queue
+
+    def subscribe_callback(self, run_id: str, callback: Any) -> Any:
+        self._callbacks[run_id].add(callback)
+
+        def unsubscribe() -> None:
+            self._callbacks[run_id].discard(callback)
+            if not self._callbacks[run_id]:
+                self._callbacks.pop(run_id, None)
+
+        return unsubscribe
 
     def unsubscribe(self, run_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
         self._subscribers[run_id].discard(queue)

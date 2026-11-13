@@ -62,7 +62,11 @@ export function RunPanel({
         <div className="run-nodes">
           {run ? (
             run.nodeRuns.length === 0 ? (
-              <p className="muted">Waiting for nodes…</p>
+              <p className="muted">
+                {run.status === "running"
+                  ? "Waiting for reports… Listener is active."
+                  : "Waiting for nodes…"}
+              </p>
             ) : (
               run.nodeRuns.map((nodeRun) => (
                 <details key={nodeRun.nodeId} className={`run-node status-${nodeRun.status}`}>

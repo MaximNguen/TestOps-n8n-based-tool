@@ -120,11 +120,13 @@ class Executor:
         env: dict[str, str],
         save_run: Callable[[Run], None],
         bus: EventBus,
+        save_node_input: Callable[[str, str, list[Item]], None] | None = None,
     ) -> None:
         self.credentials = credentials
         self.env = env
         self.save_run = save_run
         self.bus = bus
+        self.save_node_input = save_node_input
         self._cancellations: dict[str, asyncio.Event] = {}
 
     def cancel(self, run_id: str) -> bool:
@@ -269,7 +271,12 @@ class Executor:
                     node_run.logs.append("No input items, node skipped")
                     outputs = {}
                 else:
-                    outputs = await self._execute_node(
+                    if self.save_node_input:
+                        try:
+                            self.save_node_input(run.id, node.id, input_items)
+                        except Exception as error:  # noqa: BLE001
+                            node_run.logs.append(f"Cannot store node input for retry: {error}")
+                    outputs = await self._execute_with_retry(
                         workflow,
                         node,
                         input_items,
@@ -310,6 +317,67 @@ class Executor:
         ]
         if missing:
             raise ValueError(f"Cycle detected, nodes never became ready: {', '.join(missing)}")
+
+    def _retry_policy(self, node: NodeSpec) -> tuple[int, float]:
+        attempts = node.retry_max_attempts
+        delay = node.retry_delay_seconds
+        is_ai = node.type.startswith("ai.") or (
+            node.type == "qa.testPlan"
+            and str(node.parameters.get("mode") or "template") == "llm"
+        )
+        if attempts is None:
+            attempts = 5 if is_ai else 1
+        if delay is None:
+            delay = 10.0 if is_ai else 0.0
+        return max(1, int(attempts)), max(0.0, float(delay))
+
+    async def _execute_with_retry(
+        self,
+        workflow: Workflow,
+        node: NodeSpec,
+        input_items: list[Item],
+        run: Run,
+        graph: _Graph,
+        outputs_by_node: dict[str, dict[str, list[Item]]],
+        cancel: asyncio.Event,
+        node_run: NodeRun,
+    ) -> dict[str, list[Item]]:
+        attempts, delay = self._retry_policy(node)
+        for attempt in range(1, attempts + 1):
+            if cancel.is_set():
+                raise RunCanceled()
+            try:
+                return await self._execute_node(
+                    workflow,
+                    node,
+                    input_items,
+                    run,
+                    graph,
+                    outputs_by_node,
+                    cancel,
+                    node_run,
+                )
+            except RunCanceled:
+                raise
+            except Exception as error:  # noqa: BLE001
+                if attempt >= attempts:
+                    raise
+                message = (
+                    f"Attempt {attempt}/{attempts} failed: {error}. "
+                    f"Retry in {delay:g}s"
+                )
+                node_run.logs.append(message)
+                self.bus.publish(
+                    {
+                        "type": "log",
+                        "runId": run.id,
+                        "nodeId": node.id,
+                        "level": "warn",
+                        "message": message,
+                    }
+                )
+                await asyncio.sleep(delay)
+        raise RuntimeError("Retry loop exited unexpectedly")
 
     async def _execute_node(
         self,

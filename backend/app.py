@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -17,6 +17,7 @@ from config import load_config
 from engine.events import EventBus
 from engine.executor import Executor
 from engine.types import Workflow
+from listener import ListenerManager
 from scheduler import Scheduler
 from store.db import Database
 
@@ -54,14 +55,19 @@ def create_app() -> FastAPI:
     nodes.register_all()
 
     db = Database(config.db_path, config.master_secret)
+    stale_listeners = db.cancel_stale_listener_runs()
+    if stale_listeners:
+        logger.info("Canceled %s stale listener run(s) after restart", stale_listeners)
     bus = EventBus()
     executor = Executor(
         credentials=DbCredentials(db),
         env=config.env,
         save_run=db.save_run,
         bus=bus,
+        save_node_input=db.save_node_input,
     )
     scheduler = Scheduler(db, executor)
+    listeners = ListenerManager(db, executor)
     _seed_example(db, config.examples_dir)
 
     @asynccontextmanager
@@ -71,6 +77,7 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
+            await listeners.shutdown()
             await scheduler.stop()
             db.close()
 
@@ -79,7 +86,8 @@ def create_app() -> FastAPI:
     app.state.db = db
     app.state.executor = executor
     app.state.bus = bus
-    app.include_router(build_router(db, executor, bus))
+    app.state.listeners = listeners
+    app.include_router(build_router(db, executor, bus, listeners))
 
     if config.ui_dist.exists():
         app.mount("/", StaticFiles(directory=str(config.ui_dist), html=True), name="ui")
@@ -92,7 +100,7 @@ def create_app() -> FastAPI:
                 "<h1>custom-n8n</h1>"
                 "<p>UI is not built yet. Run:</p>"
                 "<pre>cd ui &amp;&amp; npm install &amp;&amp; npm run build</pre>"
-                "<p>API: <a href='/docs'>/docs</a> · <a href='/api/nodes'>/api/nodes</a></p>"
+                "<p>API: <a href='/docs'>/docs</a> В· <a href='/api/nodes'>/api/nodes</a></p>"
                 "</body></html>"
             )
 

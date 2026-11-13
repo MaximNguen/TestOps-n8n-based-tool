@@ -43,6 +43,7 @@ export function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
+  const [activeChildRunId, setActiveChildRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sample, setSample] = useState("");
   const [credName, setCredName] = useState("");
@@ -133,6 +134,9 @@ export function App() {
   }, [workflow]);
 
   const applyEvent = useCallback((event: IncomingEvent) => {
+    if ("childRunId" in event && event.childRunId) {
+      setActiveChildRunId(event.childRunId);
+    }
     switch (event.type) {
       case "snapshot":
         setRun(event.run);
@@ -198,26 +202,14 @@ export function App() {
     }
   }, []);
 
-  const handleRun = useCallback(async () => {
-    if (!workflow) return;
-    setStarting(true);
-    setError(null);
-    setLogs([]);
-    setRun(null);
-    eventSource.current?.close();
-    eventSource.current = null;
-    try {
-      const saved = await saveWorkflow();
-      if (!saved) return;
-      let data: unknown;
-      if (sample.trim()) {
-        try {
-          data = JSON.parse(sample);
-        } catch {
-          throw new Error("Test payload is not valid JSON");
-        }
-      }
-      const { runId } = await api.runWorkflow(saved.id, data);
+  const subscribeToRun = useCallback(
+    (runId: string) => {
+      eventSource.current?.close();
+      eventSource.current = null;
+      setRun(null);
+      setLogs([]);
+      setActiveChildRunId(null);
+
       const source = new EventSource(`/api/runs/${runId}/events`);
       eventSource.current = source;
       const listener = (message: MessageEvent) => {
@@ -235,12 +227,52 @@ export function App() {
           eventSource.current = null;
         }
       };
+    },
+    [applyEvent],
+  );
+
+  const handleRun = useCallback(async () => {
+    if (!workflow) return;
+    setStarting(true);
+    setError(null);
+    setLogs([]);
+    setRun(null);
+    setActiveChildRunId(null);
+    eventSource.current?.close();
+    eventSource.current = null;
+    try {
+      const saved = await saveWorkflow();
+      if (!saved) return;
+      let data: unknown;
+      if (sample.trim()) {
+        try {
+          data = JSON.parse(sample);
+        } catch {
+          throw new Error("Test payload is not valid JSON");
+        }
+      }
+      const { runId } = await api.runWorkflow(saved.id, data);
+      subscribeToRun(runId);
     } catch (runError) {
       setError(errorMessage(runError));
     } finally {
       setStarting(false);
     }
-  }, [applyEvent, sample, saveWorkflow, workflow]);
+  }, [sample, saveWorkflow, subscribeToRun, workflow]);
+
+  const handleRetryNode = useCallback(
+    async (nodeId: string) => {
+      if (!run) return;
+      try {
+        const targetRunId = activeChildRunId ?? run.id;
+        const { runId } = await api.retryNode(targetRunId, nodeId);
+        subscribeToRun(runId);
+      } catch (retryError) {
+        setError(errorMessage(retryError));
+      }
+    },
+    [activeChildRunId, run, subscribeToRun],
+  );
 
   const handleCancel = useCallback(async () => {
     if (!run) return;
@@ -482,7 +514,7 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          custom<span>n8n</span>
+          TestOps <span>n8n</span>
         </div>
         {workflow ? (
           <input
@@ -621,6 +653,7 @@ export function App() {
               onNodeMove={moveNode}
               onDeleteNodes={deleteNodes}
               onConnectionsChange={changeConnections}
+              onRetryNode={(nodeId) => void handleRetryNode(nodeId)}
             />
           ) : (
             <div className="empty-state">Create or import a workflow to start.</div>

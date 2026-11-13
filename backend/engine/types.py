@@ -26,6 +26,8 @@ class NodeSpec:
     position: dict[str, float] = field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     parameters: JsonObject = field(default_factory=dict)
     disabled: bool = False
+    retry_max_attempts: int | None = None
+    retry_delay_seconds: float | None = None
 
     def to_dict(self) -> JsonObject:
         return {
@@ -35,11 +37,15 @@ class NodeSpec:
             "position": self.position,
             "parameters": self.parameters,
             "disabled": self.disabled,
+            "retryMaxAttempts": self.retry_max_attempts,
+            "retryDelaySeconds": self.retry_delay_seconds,
         }
 
     @classmethod
     def from_dict(cls, data: JsonObject) -> "NodeSpec":
         position = data.get("position") or {}
+        retry_max = data.get("retryMaxAttempts")
+        retry_delay = data.get("retryDelaySeconds")
         return cls(
             id=str(data["id"]),
             type=str(data["type"]),
@@ -50,6 +56,8 @@ class NodeSpec:
             },
             parameters=dict(data.get("parameters") or {}),
             disabled=bool(data.get("disabled", False)),
+            retry_max_attempts=int(retry_max) if retry_max not in (None, "") else None,
+            retry_delay_seconds=float(retry_delay) if retry_delay not in (None, "") else None,
         )
 
 

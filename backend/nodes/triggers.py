@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
 from engine.types import Item, NodeContext, NodeDefinition, NodeProperty
@@ -107,6 +108,47 @@ def _normalize_entry(entry: Any) -> dict[str, Any]:
     }
 
 
+def _pytest_error(entry: dict[str, Any]) -> str | None:
+    for phase in ("call", "setup", "teardown"):
+        data = entry.get(phase)
+        if not isinstance(data, dict):
+            continue
+        crash = data.get("crash")
+        if isinstance(crash, dict) and crash.get("message"):
+            return str(crash["message"])
+        longrepr = data.get("longrepr")
+        if longrepr:
+            return str(longrepr)[-2000:]
+    return entry.get("error")
+
+
+def _from_pytest(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tests: list[dict[str, Any]] = []
+    for entry in entries:
+        outcome = str(entry.get("outcome") or "").lower()
+        duration = entry.get("duration")
+        if not isinstance(duration, (int, float)):
+            duration = sum(
+                float((entry.get(phase) or {}).get("duration") or 0)
+                for phase in ("setup", "call", "teardown")
+                if isinstance(entry.get(phase), dict)
+            )
+        tests.append(
+            {
+                "name": entry.get("nodeid") or entry.get("name") or "pytest test",
+                "method": None,
+                "url": "",
+                "status": None,
+                "passed": outcome == "passed",
+                "skipped": outcome == "skipped",
+                "error": None if outcome == "passed" else _pytest_error(entry),
+                "assertions": [],
+                "duration": float(duration) if isinstance(duration, (int, float)) else None,
+            }
+        )
+    return tests
+
+
 def _from_junit(xml_text: str) -> list[dict[str, Any]]:
     root = ET.fromstring(xml_text)
     tests: list[dict[str, Any]] = []
@@ -160,7 +202,18 @@ def normalize_tests(payload: Any, source: str = "auto") -> tuple[list[dict[str, 
             return [], "unknown"
 
     if isinstance(payload, dict) and isinstance(payload.get("tests"), list):
-        return [_normalize_entry(entry) for entry in payload["tests"]], str(
+        entries = payload["tests"]
+        if any(
+            isinstance(entry, dict)
+            and (
+                "nodeid" in entry
+                or str(entry.get("outcome") or "").lower()
+                in ("passed", "failed", "skipped", "error")
+            )
+            for entry in entries
+        ):
+            return _from_pytest(entries), "pytest"
+        return [_normalize_entry(entry) for entry in entries], str(
             payload.get("source") or source
         )
 
@@ -226,6 +279,48 @@ def normalize_tests(payload: Any, source: str = "auto") -> tuple[list[dict[str, 
         ]
 
     return tests, detected
+
+
+def matching_files(directory: Path, patterns: str) -> list[Path]:
+    files: dict[Path, Path] = {}
+    for pattern in (part.strip() for part in patterns.split(",")):
+        if not pattern:
+            continue
+        try:
+            for path in directory.glob(pattern):
+                if path.is_file():
+                    files[path.resolve()] = path
+        except (OSError, ValueError):
+            continue
+    return sorted(files.values(), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def report_from_file(path: Path, source: str = "auto") -> Item:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    payload: Any = raw
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid JSON in {path}: {error}") from error
+
+    tests, detected = normalize_tests(payload, source)
+    report = analyze(tests)
+    report["source"] = detected
+    report["filePath"] = str(path)
+    report["tests"] = tests[:500]
+    report["totalTests"] = len(tests)
+    if not tests:
+        report["note"] = (
+            "Не удалось распознать результаты. Поддерживаются Newman/Postman JSON, "
+            "pytest-json-report, JUnit XML и массив {name,status,passed,error}."
+        )
+    return Item(json=report)
+
+
+def resolve_directory(value: Any) -> Path:
+    directory = Path(str(value or "data/inbox")).expanduser()
+    return directory if directory.is_absolute() else Path.cwd() / directory
 
 
 def _sample_payload(context: NodeContext) -> Any:
@@ -421,8 +516,91 @@ def _register_test_results() -> None:
     )
 
 
+def _register_test_results_file() -> None:
+    def execute(context: NodeContext) -> dict[str, list[Item]]:
+        source = str(context.params.get("source") or "auto")
+        file_value = None
+        if context.input:
+            first = context.input[0].json
+            file_value = first.get("filePath") or first.get("path")
+
+        if file_value:
+            path = Path(str(file_value))
+            if not path.is_file():
+                raise ValueError(f"Report file not found: {path}")
+            context.log(f"Читаю отчёт: {path}")
+            return {"main": [report_from_file(path, source)]}
+
+        directory = resolve_directory(context.params.get("directory"))
+        patterns = str(context.params.get("patterns") or "results*.json,*.xml")
+        files = matching_files(directory, patterns)
+        if not files:
+            raise ValueError(
+                f"Нет файлов отчётов в {directory} по маскам {patterns}"
+            )
+        context.log(f"Ручной запуск: беру самый свежий файл {files[0]}")
+        return {"main": [report_from_file(files[0], source)]}
+
+    register_node(
+        NodeDefinition(
+            type="trigger.testResultsFile",
+            display_name="Test results file trigger",
+            description=(
+                "Listener mode: run the workflow once and it waits for new "
+                "pytest/Newman/JUnit reports, polling the folder every N seconds. "
+                "Existing files are ignored. No timeout: stop with Cancel or "
+                "deactivate the workflow."
+            ),
+            group="trigger",
+            is_trigger=True,
+            properties=[
+                NodeProperty(
+                    name="directory",
+                    display_name="Reports directory",
+                    type="string",
+                    default="data/inbox",
+                    required=True,
+                    description=(
+                        "Absolute path or a path relative to the project root. "
+                        "In Docker use a path inside the container."
+                    ),
+                ),
+                NodeProperty(
+                    name="patterns",
+                    display_name="File patterns",
+                    type="string",
+                    default="results*.json,*.xml,newman*.json",
+                    description="Comma-separated glob patterns. ** is supported for recursion.",
+                ),
+                NodeProperty(
+                    name="source",
+                    display_name="Result format",
+                    type="options",
+                    default="auto",
+                    options=[
+                        {"label": "Auto-detect", "value": "auto"},
+                        {"label": "pytest JSON", "value": "pytest"},
+                        {"label": "Generic JSON", "value": "generic"},
+                        {"label": "JUnit XML", "value": "junit"},
+                        {"label": "Newman/Postman JSON", "value": "newman"},
+                    ],
+                ),
+                NodeProperty(
+                    name="intervalSeconds",
+                    display_name="Poll interval (sec)",
+                    type="number",
+                    default=10,
+                    description="How often to check the folder. Default is 10 seconds.",
+                ),
+            ],
+            execute=execute,
+        )
+    )
+
+
 def register_nodes() -> None:
     _register_manual()
     _register_webhook()
     _register_schedule()
     _register_test_results()
+    _register_test_results_file()

@@ -1,0 +1,60 @@
+﻿{
+  "name": "QA: auto-pickup test reports from folder",
+  "description": "Listener: run the workflow once, then it waits for new pytest/Newman/JUnit reports and builds an AI summary and report. Existing files are ignored; stop with Cancel or active=false.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "watch",
+      "type": "trigger.testResultsFile",
+      "name": "Watch reports folder",
+      "position": { "x": 80, "y": 180 },
+      "parameters": {
+        "directory": "data/inbox",
+        "patterns": "results*.json,*.xml,newman*.json",
+        "source": "auto",
+        "intervalSeconds": 10
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "ai.summarizeResults",
+      "name": "AI summary",
+      "position": { "x": 420, "y": 180 },
+      "parameters": {
+        "useAi": true,
+        "language": "ru",
+        "provider": "opencode",
+        "credentialId": "",
+        "baseUrl": "",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "agent": "",
+        "opencodeBin": ""
+      }
+    },
+    {
+      "id": "report",
+      "type": "qa.report",
+      "name": "Build report",
+      "position": { "x": 760, "y": 180 },
+      "parameters": {
+        "title": "QA report: auto-picked results"
+      }
+    },
+    {
+      "id": "publish",
+      "type": "qa.publish",
+      "name": "Save report",
+      "position": { "x": 1100, "y": 180 },
+      "parameters": {
+        "channel": "file",
+        "path": "",
+        "title": ""
+      }
+    }
+  ],
+  "connections": [
+    { "from": "watch", "to": "summarize", "output": "main" },
+    { "from": "summarize", "to": "report", "output": "main" },
+    { "from": "report", "to": "publish", "output": "main" }
+  ]
+}

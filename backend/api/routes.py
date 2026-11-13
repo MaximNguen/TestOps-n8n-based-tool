@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -13,6 +13,7 @@ from engine.events import EventBus
 from engine.executor import Executor, build_graph
 from engine.registry import catalog, has_definition
 from engine.types import Connection, Item, NodeSpec, Workflow
+from listener import ListenerManager
 from store.db import Database
 
 
@@ -125,7 +126,12 @@ async def _read_webhook_body(request: Request) -> Any:
     return raw.decode("utf-8", "replace")
 
 
-def build_router(db: Database, executor: Executor, bus: EventBus) -> APIRouter:
+def build_router(
+    db: Database,
+    executor: Executor,
+    bus: EventBus,
+    listeners: ListenerManager,
+) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/health")
@@ -183,6 +189,25 @@ def build_router(db: Database, executor: Executor, bus: EventBus) -> APIRouter:
         workflow = db.get_workflow(workflow_id)
         if not workflow:
             raise HTTPException(status_code=404, detail="Workflow not found")
+
+        listener_node = None
+        if payload.startNodeId:
+            candidate = next(
+                (node for node in workflow.nodes if node.id == payload.startNodeId),
+                None,
+            )
+            if candidate and candidate.type == "trigger.testResultsFile":
+                listener_node = candidate
+        else:
+            listener_node = next(
+                (node for node in workflow.nodes if node.type == "trigger.testResultsFile"),
+                None,
+            )
+
+        if listener_node is not None:
+            run = listeners.start(workflow, listener_node)
+            return {"runId": run.id, "listener": True}
+
         run_id = uuid.uuid4().hex
         asyncio.create_task(
             executor.run(
@@ -227,7 +252,50 @@ def build_router(db: Database, executor: Executor, bus: EventBus) -> APIRouter:
 
     @router.post("/api/runs/{run_id}/cancel")
     async def cancel_run(run_id: str) -> dict[str, Any]:
-        return {"canceled": executor.cancel(run_id)}
+        canceled = listeners.cancel(run_id)
+        if not canceled:
+            canceled = executor.cancel(run_id)
+        return {"canceled": canceled}
+
+    @router.post("/api/runs/{run_id}/retry/{node_id}")
+    async def retry_node(run_id: str, node_id: str) -> dict[str, Any]:
+        run = db.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        workflow = db.get_workflow(str(run.get("workflowId") or ""))
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        node = next((entry for entry in workflow.nodes if entry.id == node_id), None)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        if node.type == "trigger.testResultsFile":
+            raise HTTPException(
+                status_code=400,
+                detail="Listener trigger cannot be retried separately; start the workflow again",
+            )
+        stored = db.get_node_input(run_id, node_id)
+        if not stored:
+            raise HTTPException(
+                status_code=409,
+                detail="Input for this node was not stored or is too large; run the workflow again",
+            )
+        items = [
+            Item(json=entry.get("json") or {}, binary=entry.get("binary"))
+            for entry in stored
+            if isinstance(entry, dict)
+        ]
+        new_run_id = uuid.uuid4().hex
+        asyncio.create_task(
+            executor.run(
+                workflow,
+                trigger="retry",
+                start_node_id=node_id,
+                items=items,
+                run_id=new_run_id,
+            )
+        )
+        await asyncio.sleep(0)
+        return {"runId": new_run_id}
 
     @router.get("/api/runs/{run_id}/events")
     async def run_events(run_id: str) -> StreamingResponse:

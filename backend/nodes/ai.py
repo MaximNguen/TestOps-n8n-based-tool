@@ -255,9 +255,8 @@ def _register_summarize_results() -> None:
                         result["aiProvider"] = settings.provider
                         context.log(f"AI-резюме добавлено ({settings.provider})")
                 except Exception as error:  # noqa: BLE001
-                    result["aiError"] = str(error)
-                    result["aiProvider"] = settings.provider
-                    context.log(f"AI недоступен, использую эвристику: {error}", "warn")
+                    context.log(f"AI недоступен: {error}", "error")
+                    raise
             else:
                 result["aiNote"] = (
                     "AI отключён или провайдер не настроен — использована эвристика"
