@@ -1,0 +1,123 @@
+{
+  "name": "QA: OpenAPI -> plan -> Postman run -> AI summary -> report",
+  "description": "Full pipeline. Edit the Postman collection path in 'Run Postman collection' before running.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger.manual",
+      "name": "Manual trigger",
+      "position": { "x": 80, "y": 200 },
+      "parameters": { "sample": "" }
+    },
+    {
+      "id": "openapi",
+      "type": "qa.openapiCases",
+      "name": "OpenAPI cases",
+      "position": { "x": 380, "y": 200 },
+      "parameters": {
+        "specUrl": "",
+        "baseUrl": "https://api.demo.local",
+        "include": "",
+        "maxCases": 30,
+        "includeDeprecated": false,
+        "spec": {
+          "openapi": "3.0.0",
+          "info": { "title": "Demo API", "version": "1.0.0" },
+          "paths": {
+            "/users": {
+              "get": {
+                "operationId": "listUsers",
+                "summary": "List users",
+                "responses": { "200": { "description": "ok" } }
+              }
+            },
+            "/users/{id}": {
+              "get": {
+                "operationId": "getUser",
+                "summary": "Get user",
+                "parameters": [
+                  { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "example": 42 } }
+                ],
+                "responses": { "200": { "description": "ok" }, "404": { "description": "not found" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "plan",
+      "type": "qa.testPlan",
+      "name": "Test plan",
+      "position": { "x": 700, "y": 200 },
+      "parameters": {
+        "mode": "template",
+        "title": "API test plan",
+        "requirements": "",
+        "maxCases": 30,
+        "provider": "opencode",
+        "credentialId": "",
+        "baseUrl": "",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "agent": "",
+        "opencodeBin": "",
+        "fallbackToTemplate": true
+      }
+    },
+    {
+      "id": "run",
+      "type": "qa.runCollection",
+      "name": "Run Postman collection",
+      "position": { "x": 1020, "y": 200 },
+      "parameters": {
+        "collection": "./examples/postman/smoke.collection.json",
+        "environment": "",
+        "extraArgs": "",
+        "timeoutSeconds": 600,
+        "runner": "auto",
+        "newmanBin": "",
+        "postmanBin": "",
+        "failOnTestFailure": false
+      }
+    },
+    {
+      "id": "summary",
+      "type": "ai.summarizeResults",
+      "name": "Summarize results",
+      "position": { "x": 1340, "y": 200 },
+      "parameters": {
+        "useAi": true,
+        "language": "ru",
+        "provider": "opencode",
+        "credentialId": "",
+        "baseUrl": "",
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "agent": "",
+        "opencodeBin": ""
+      }
+    },
+    {
+      "id": "report",
+      "type": "qa.report",
+      "name": "Build report",
+      "position": { "x": 1660, "y": 200 },
+      "parameters": { "title": "QA pipeline report" }
+    },
+    {
+      "id": "publish",
+      "type": "qa.publish",
+      "name": "Save report",
+      "position": { "x": 1980, "y": 200 },
+      "parameters": { "channel": "file", "path": "", "title": "" }
+    }
+  ],
+  "connections": [
+    { "from": "trigger", "to": "openapi", "output": "main" },
+    { "from": "openapi", "to": "plan", "output": "main" },
+    { "from": "plan", "to": "run", "output": "main" },
+    { "from": "run", "to": "summary", "output": "main" },
+    { "from": "summary", "to": "report", "output": "main" },
+    { "from": "report", "to": "publish", "output": "main" }
+  ]
+}

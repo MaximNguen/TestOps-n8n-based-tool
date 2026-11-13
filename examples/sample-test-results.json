@@ -1,0 +1,66 @@
+{
+  "results": [
+    {
+      "name": "GET /health",
+      "method": "GET",
+      "url": "https://api.demo.local/health",
+      "status": 200,
+      "passed": true,
+      "duration": 45
+    },
+    {
+      "name": "GET /users",
+      "method": "GET",
+      "url": "https://api.demo.local/users",
+      "status": 500,
+      "passed": false,
+      "error": "Internal Server Error",
+      "duration": 120
+    },
+    {
+      "name": "POST /auth/login",
+      "method": "POST",
+      "url": "https://api.demo.local/auth/login",
+      "status": 401,
+      "passed": false,
+      "error": "Unauthorized: token expired",
+      "duration": 88
+    },
+    {
+      "name": "GET /orders/42",
+      "method": "GET",
+      "url": "https://api.demo.local/orders/42",
+      "status": 404,
+      "passed": false,
+      "error": "Not Found",
+      "duration": 60
+    },
+    {
+      "name": "POST /payments",
+      "method": "POST",
+      "url": "https://api.demo.local/payments",
+      "status": null,
+      "passed": false,
+      "error": "ETIMEDOUT: request timed out after 30000ms",
+      "duration": 30000
+    },
+    {
+      "name": "GET /products",
+      "method": "GET",
+      "url": "https://api.demo.local/products",
+      "status": 200,
+      "passed": false,
+      "error": "Schema mismatch: required field 'price' is missing",
+      "duration": 75
+    },
+    {
+      "name": "DELETE /users/99",
+      "method": "DELETE",
+      "url": "https://api.demo.local/users/99",
+      "status": 403,
+      "passed": false,
+      "error": "Forbidden: role user cannot delete users",
+      "duration": 50
+    }
+  ]
+}
