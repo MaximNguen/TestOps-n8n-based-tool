@@ -432,6 +432,10 @@ async def _run_process(command: list[str], timeout: float) -> tuple[int, str, st
         process.kill()
         await process.wait()
         raise ValueError(f"Test runner timed out after {timeout} seconds") from error
+    except asyncio.CancelledError:
+        process.kill()
+        await process.wait()
+        raise
     return (
         process.returncode or 0,
         stdout.decode("utf-8", "replace"),

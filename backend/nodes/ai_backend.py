@@ -297,6 +297,10 @@ async def opencode_run(settings: AiSettings, messages: list[dict[str, str]]) -> 
             process.kill()
             await process.wait()
             raise ValueError(f"opencode timed out after {settings.timeout} seconds") from error
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise
     except FileNotFoundError as error:
         raise ValueError(f"opencode could not start: {error}") from error
     finally:

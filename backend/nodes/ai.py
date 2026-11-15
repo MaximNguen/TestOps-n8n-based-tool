@@ -159,6 +159,16 @@ def _register_agent() -> None:
                         "Use a read-only agent such as plan."
                     ),
                 ),
+                NodeProperty(
+                    name="timeoutSeconds",
+                    display_name="Timeout (sec)",
+                    type="number",
+                    default=180,
+                    description=(
+                        "Max time for one opencode attempt. "
+                        "Increase for a full codebase review."
+                    ),
+                ),
             ],
             execute=execute,
         )

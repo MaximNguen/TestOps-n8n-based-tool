@@ -11,9 +11,11 @@ import type {
   WorkflowNode,
 } from "./types";
 import { FlowCanvas } from "./components/FlowCanvas";
+import { HelpPage } from "./components/HelpPage";
 import { Inspector } from "./components/Inspector";
 import { NodePalette } from "./components/NodePalette";
 import { RunPanel } from "./components/RunPanel";
+import { WorkflowLibrary } from "./components/WorkflowLibrary";
 import { WorkflowList } from "./components/WorkflowList";
 
 type IncomingEvent = RunEvent | { type: "snapshot"; run: Run };
@@ -44,6 +46,9 @@ export function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [activeChildRunId, setActiveChildRunId] = useState<string | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sample, setSample] = useState("");
   const [credName, setCredName] = useState("");
@@ -88,6 +93,12 @@ export function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const selectedNode = useMemo(
     () => workflow?.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -414,6 +425,55 @@ export function App() {
         const imported = await api.importWorkflow(parsed);
         setWorkflows((previous) => [imported, ...previous]);
         selectWorkflow(imported);
+        setShowLibrary(false);
+      } catch (importError) {
+        setError(errorMessage(importError));
+      }
+    },
+    [selectWorkflow],
+  );
+
+  const handleSave = useCallback(async (): Promise<Workflow | null> => {
+    const saved = await saveWorkflow();
+    if (saved) {
+      setNotice(`Changes applied: ${saved.name}`);
+    }
+    return saved;
+  }, [saveWorkflow]);
+
+  const handleSaveWorkflowCopy = useCallback(async (): Promise<Workflow | null> => {
+    if (!workflow) return null;
+    const name = window.prompt(
+      "Save workflow as (copy with all settings)",
+      `${workflow.name} (saved)`,
+    );
+    if (!name || !name.trim()) return null;
+    try {
+      const saved = await api.importWorkflow({
+        name: name.trim(),
+        description: workflow.description ?? "",
+        active: workflow.active,
+        nodes: workflow.nodes,
+        connections: workflow.connections,
+      });
+      setWorkflows((previous) => [saved, ...previous]);
+      setNotice(`Workflow saved to My workflows: ${saved.name}`);
+      return saved;
+    } catch (saveError) {
+      setError(errorMessage(saveError));
+      return null;
+    }
+  }, [workflow]);
+
+  const handleImportExample = useCallback(
+    async (payload: unknown) => {
+      try {
+        const imported = await api.importWorkflow(payload);
+        setWorkflows((previous) => [imported, ...previous]);
+        selectWorkflow(imported);
+        setShowHelp(false);
+        setShowLibrary(false);
+        setError(null);
       } catch (importError) {
         setError(errorMessage(importError));
       }
@@ -545,8 +605,35 @@ export function App() {
           </label>
         )}
         <div className="topbar-actions">
+          <button
+            onClick={() => {
+              setShowHelp(true);
+              setShowLibrary(false);
+            }}
+          >
+            Guide
+          </button>
+          <button
+            onClick={() => {
+              setShowLibrary(true);
+              setShowHelp(false);
+            }}
+          >
+            Library
+          </button>
           <button onClick={() => fileInput.current?.click()}>Import</button>
-          <button onClick={() => void saveWorkflow()} disabled={!workflow}>
+          <button
+            onClick={() => void handleSaveWorkflowCopy()}
+            disabled={!workflow}
+            title="Save a copy with all settings to My workflows"
+          >
+            Save workflow
+          </button>
+          <button
+            onClick={() => void handleSave()}
+            disabled={!workflow}
+            title="Apply current changes to this workflow"
+          >
             Save
           </button>
           <button
@@ -581,6 +668,35 @@ export function App() {
         </div>
       )}
 
+      {notice && (
+        <div className="notice-banner">
+          <span>{notice}</span>
+          <button className="icon-button" onClick={() => setNotice(null)}>
+            ×
+          </button>
+        </div>
+      )}
+
+      {showHelp ? (
+        <HelpPage
+          onClose={() => setShowHelp(false)}
+          onImportWorkflow={handleImportExample}
+        />
+      ) : showLibrary ? (
+        <WorkflowLibrary
+          workflows={workflows}
+          currentWorkflowId={workflow?.id ?? null}
+          onOpen={(selected) => {
+            selectWorkflow(selected);
+            setShowLibrary(false);
+          }}
+          onDelete={(id) => handleDeleteWorkflow(id)}
+          onSaveCurrent={handleSave}
+          onSaveAsCopy={handleSaveWorkflowCopy}
+          onBack={() => setShowLibrary(false)}
+        />
+      ) : (
+        <>
       <main className="workspace">
         <aside className="sidebar">
           <WorkflowList
@@ -699,6 +815,8 @@ export function App() {
           onCancel={() => void handleCancel()}
         />
       </div>
+        </>
+      )}
     </div>
   );
 }

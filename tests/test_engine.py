@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,8 @@ import pytest
 from engine.events import EventBus
 from engine.executor import Executor
 from engine.expressions import create_scope, resolve_value
-from engine.types import Item, NodeContext, NodeSpec, Workflow
+from engine.registry import has_definition, register
+from engine.types import Item, NodeContext, NodeDefinition, NodeSpec, Workflow
 from listener import ListenerManager
 from nodes.ai_backend import (
     _merge_chunks,
@@ -26,6 +28,24 @@ from store.db import Database
 class EmptyCredentials:
     def get(self, credential_id: str) -> dict:
         return {}
+
+
+if not has_definition("test.delay"):
+
+    async def _delay_execute(context: NodeContext) -> dict[str, list[Item]]:
+        await asyncio.sleep(float(context.params.get("seconds") or 0.3))
+        return {"main": context.input}
+
+    register(
+        NodeDefinition(
+            type="test.delay",
+            display_name="Test delay",
+            description="Async delay for executor tests",
+            group="transform",
+            properties=[],
+            execute=_delay_execute,
+        )
+    )
 
 
 @pytest.fixture()
@@ -301,6 +321,124 @@ def test_node_retry_stores_input_and_logs_attempts(executor: Executor, db: Datab
     stored = db.get_node_input(run.id, "fail")
     assert stored is not None
     assert stored[0]["json"] == {}
+
+
+def test_parallel_branches_run_concurrently(executor: Executor) -> None:
+    workflow = make_workflow(
+        nodes=[
+            {
+                "id": "trigger",
+                "type": "trigger.manual",
+                "name": "Manual",
+                "parameters": {},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "left",
+                "type": "test.delay",
+                "name": "Left",
+                "parameters": {"seconds": 0.4},
+                "position": {"x": 200, "y": -80},
+            },
+            {
+                "id": "right",
+                "type": "test.delay",
+                "name": "Right",
+                "parameters": {"seconds": 0.4},
+                "position": {"x": 200, "y": 80},
+            },
+        ],
+        connections=[
+            {"from": "trigger", "to": "left"},
+            {"from": "trigger", "to": "right"},
+        ],
+    )
+    started = time.perf_counter()
+    run = asyncio.run(executor.run(workflow, trigger="manual"))
+    elapsed = time.perf_counter() - started
+    assert run.status == "success"
+    assert elapsed < 0.75
+
+
+def test_cancel_interrupts_running_node(executor: Executor) -> None:
+    workflow = make_workflow(
+        nodes=[
+            {
+                "id": "trigger",
+                "type": "trigger.manual",
+                "name": "Manual",
+                "parameters": {},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "slow",
+                "type": "test.delay",
+                "name": "Slow",
+                "parameters": {"seconds": 5},
+                "position": {"x": 200, "y": 0},
+            },
+        ],
+        connections=[{"from": "trigger", "to": "slow"}],
+    )
+
+    async def scenario() -> dict:
+        task = asyncio.create_task(
+            executor.run(
+                workflow,
+                trigger="manual",
+                run_id="cancel-test-run",
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert executor.cancel("cancel-test-run") is True
+        result = await asyncio.wait_for(task, timeout=3)
+        return result.to_dict()
+
+    result = asyncio.run(scenario())
+    assert result["status"] == "canceled"
+
+
+def test_single_node_run_does_not_execute_downstream(executor: Executor) -> None:
+    workflow = make_workflow(
+        nodes=[
+            {
+                "id": "trigger",
+                "type": "trigger.manual",
+                "name": "Manual",
+                "parameters": {},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "a",
+                "type": "core.set",
+                "name": "A",
+                "parameters": {"values": {"ok": True}},
+                "position": {"x": 200, "y": 0},
+            },
+            {
+                "id": "b",
+                "type": "core.set",
+                "name": "B",
+                "parameters": {"values": {"downstream": True}},
+                "position": {"x": 400, "y": 0},
+            },
+        ],
+        connections=[
+            {"from": "trigger", "to": "a"},
+            {"from": "a", "to": "b"},
+        ],
+    )
+    run = asyncio.run(
+        executor.run(
+            workflow,
+            trigger="retry",
+            start_node_id="a",
+            items=[Item(json={})],
+            single_node=True,
+        )
+    )
+    assert run.status == "success"
+    assert [node.node_id for node in run.node_runs] == ["a"]
 
 
 def test_listener_waits_and_picks_new_file(executor: Executor, db: Database, tmp_path: Path) -> None:

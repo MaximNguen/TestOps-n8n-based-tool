@@ -292,6 +292,7 @@ def build_router(
                 start_node_id=node_id,
                 items=items,
                 run_id=new_run_id,
+                single_node=True,
             )
         )
         await asyncio.sleep(0)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -144,6 +145,7 @@ class Executor:
         start_node_id: str | None = None,
         items: list[Item] | None = None,
         run_id: str | None = None,
+        single_node: bool = False,
     ) -> Run:
         run = Run(
             id=run_id or uuid.uuid4().hex,
@@ -158,7 +160,14 @@ class Executor:
         self.save_run(run)
 
         try:
-            await self._execute(workflow, run, start_node_id, items, cancel)
+            await self._execute(
+                workflow,
+                run,
+                start_node_id,
+                items,
+                cancel,
+                single_node=single_node,
+            )
             if cancel.is_set():
                 run.status = "canceled"
                 run.error = "Run canceled"
@@ -180,6 +189,17 @@ class Executor:
 
         return run
 
+    def _max_parallel(self) -> int:
+        raw = self.env.get("MAX_PARALLEL_NODES")
+        try:
+            configured = int(str(raw)) if raw else 0
+        except (TypeError, ValueError):
+            configured = 0
+        if configured > 0:
+            return configured
+        cpu = os.cpu_count() or 2
+        return max(2, min(4, cpu))
+
     async def _execute(
         self,
         workflow: Workflow,
@@ -187,6 +207,7 @@ class Executor:
         start_node_id: str | None,
         initial_items: list[Item] | None,
         cancel: asyncio.Event,
+        single_node: bool = False,
     ) -> None:
         graph = build_graph(workflow)
         if not workflow.nodes:
@@ -215,15 +236,15 @@ class Executor:
         if start_node_id:
             if start_node_id not in graph.nodes_by_id:
                 raise ValueError(f"Start node not found: {start_node_id}")
-            queue: deque[str] = deque([start_node_id])
+            ready: deque[str] = deque([start_node_id])
             items_by_node[start_node_id] = list(seed_items)
         else:
-            queue = deque(node.id for node in start_nodes)
+            ready = deque(node.id for node in start_nodes)
             for node in start_nodes:
                 items_by_node[node.id] = list(seed_items)
 
         reachable: set[str] = set()
-        stack = list(queue)
+        stack = list(ready)
         while stack:
             node_id = stack.pop()
             if node_id in reachable or node_id not in graph.nodes_by_id:
@@ -231,15 +252,7 @@ class Executor:
             reachable.add(node_id)
             stack.extend(connection.target for connection in graph.outgoing.get(node_id, []))
 
-        while queue:
-            if cancel.is_set():
-                raise RunCanceled()
-
-            node_id = queue.popleft()
-            if node_id in executed:
-                continue
-            executed.add(node_id)
-
+        async def process_node(node_id: str) -> dict[str, list[Item]]:
             node = graph.nodes_by_id[node_id]
             incoming = graph.incoming.get(node_id, [])
             input_items = items_by_node.get(node_id, [])
@@ -302,15 +315,73 @@ class Executor:
             outputs_by_node[node.id] = outputs
             self.bus.publish({"type": "node.end", "runId": run.id, "nodeRun": node_run.to_dict()})
             self.save_run(run)
+            return outputs
 
-            for connection in graph.outgoing.get(node_id, []):
-                branch_items = outputs.get(connection.output or "main", [])
-                items_by_node[connection.target] = items_by_node.get(connection.target, []) + list(
-                    branch_items
-                )
-                remaining[connection.target] -= 1
-                if remaining[connection.target] == 0 and connection.target not in executed:
-                    queue.append(connection.target)
+        max_parallel = self._max_parallel()
+        running: dict[asyncio.Task, str] = {}
+
+        while ready or running:
+            if cancel.is_set():
+                for task in running:
+                    task.cancel()
+                if running:
+                    await asyncio.gather(*running, return_exceptions=True)
+                    running.clear()
+                raise RunCanceled()
+
+            while ready and len(running) < max_parallel:
+                node_id = ready.popleft()
+                if node_id in executed:
+                    continue
+                executed.add(node_id)
+                task = asyncio.create_task(process_node(node_id))
+                running[task] = node_id
+
+            if not running:
+                break
+
+            cancel_waiter = asyncio.create_task(cancel.wait())
+            done, _pending = await asyncio.wait(
+                set(running) | {cancel_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if cancel_waiter in done:
+                cancel_waiter.cancel()
+                for task in running:
+                    task.cancel()
+                if running:
+                    await asyncio.gather(*running, return_exceptions=True)
+                    running.clear()
+                raise RunCanceled()
+            cancel_waiter.cancel()
+
+            for task in done:
+                node_id = running.pop(task)
+                try:
+                    outputs = task.result()
+                except Exception:
+                    for other in running:
+                        other.cancel()
+                    if running:
+                        await asyncio.gather(*running, return_exceptions=True)
+                        running.clear()
+                    raise
+
+                if single_node:
+                    return
+
+                for connection in graph.outgoing.get(node_id, []):
+                    branch_items = outputs.get(connection.output or "main", [])
+                    items_by_node[connection.target] = items_by_node.get(
+                        connection.target, []
+                    ) + list(branch_items)
+                    remaining[connection.target] -= 1
+                    if (
+                        remaining[connection.target] == 0
+                        and connection.target not in executed
+                    ):
+                        ready.append(connection.target)
 
         missing = [
             node.name for node in workflow.nodes if node.id in reachable and node.id not in executed
