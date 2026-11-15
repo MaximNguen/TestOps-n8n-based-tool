@@ -599,11 +599,48 @@ def _register_run_collection() -> None:
     )
 
 
+def _report_score(data: dict[str, Any]) -> int:
+    score = 0
+    if "summary" in data:
+        score += 5
+    if "tests" in data:
+        score += 3
+    if "analysis" in data:
+        score += 4
+    if "markdown" in data:
+        score += 2
+    if "cases" in data:
+        score += 2
+    return score
+
+
+def _section_from_item(data: dict[str, Any], index: int) -> dict[str, str] | None:
+    if not isinstance(data, dict):
+        return {"title": f"Additional branch {index + 1}", "markdown": str(data)}
+    title = str(
+        data.get("title") or data.get("name") or f"Additional branch {index + 1}"
+    )
+    body = data.get("markdown")
+    if not isinstance(body, str) or not body.strip():
+        text = data.get("text")
+        if isinstance(text, str):
+            body = text
+    if not isinstance(body, str) or not body.strip():
+        payload = data.get("review", data)
+        try:
+            rendered = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            rendered = str(payload)
+        body = f"```json\n{rendered[:20000]}\n```"
+    return {"title": title, "markdown": body}
+
+
 def _render_markdown(report: dict[str, Any], title: str) -> str:
     summary = report.get("summary") or {}
     analysis = report.get("analysis") or report
     problems = analysis.get("likelyProblems") or []
     ai_insights = analysis.get("aiInsights") or []
+    extra_sections = report.get("extraSections") or analysis.get("extraSections") or []
     endpoints = analysis.get("topFailingEndpoints") or []
     tests = report.get("tests") or analysis.get("tests") or []
     recommendations = analysis.get("recommendations") or []
@@ -718,6 +755,16 @@ def _render_markdown(report: dict[str, Any], title: str) -> str:
             if insight.get("evidence"):
                 lines.append("")
 
+    if extra_sections:
+        for section in extra_sections:
+            if not isinstance(section, dict):
+                continue
+            section_title = str(section.get("title") or "Additional section")
+            body = section.get("markdown") or section.get("body") or ""
+            if not isinstance(body, str):
+                body = json.dumps(body, ensure_ascii=False, indent=2, default=str)
+            lines.extend([f"## {section_title}", "", body, ""])
+
     if endpoints:
         lines.extend(["## Top failing endpoints", "", "| Endpoint | Failures |", "| --- | --- |"])
         for endpoint in endpoints:
@@ -759,9 +806,25 @@ def _register_report() -> None:
     def execute(context: NodeContext) -> dict[str, list[Item]]:
         if not context.input:
             raise ValueError("Report node requires input")
-        report = dict(context.input[0].json)
+        inputs = context.input
+        primary_index = max(
+            range(len(inputs)),
+            key=lambda index: _report_score(inputs[index].json),
+        )
+        report = dict(inputs[primary_index].json)
+        extras = list(report.get("extraSections") or [])
+        for index, item in enumerate(inputs):
+            if index == primary_index:
+                continue
+            section = _section_from_item(item.json, index)
+            if section:
+                extras.append(section)
+        if extras:
+            report["extraSections"] = extras
         if "analysis" not in report and "summary" in report:
-            report["analysis"] = report
+            report["analysis"] = {
+                key: value for key, value in report.items() if key != "analysis"
+            }
         if "tests" not in report and isinstance(report.get("analysis"), dict):
             report["tests"] = report["analysis"].get("tests") or []
         title = str(context.params.get("title") or f"QA report: {context.workflow.name}")

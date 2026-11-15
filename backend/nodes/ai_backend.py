@@ -28,6 +28,7 @@ class AiSettings:
     opencode_bin: str = "opencode"
     agent: str = ""
     cwd: str | None = None
+    allow_tools: bool = False
     timeout: float = OPENCODE_DEFAULT_TIMEOUT
 
 
@@ -105,6 +106,12 @@ def resolve_ai_settings(context: NodeContext) -> AiSettings:
             or context.env.get("OPENCODE_CWD")
             or ""
         ).strip()
+        allow_tools = bool(
+            context.params.get("allowTools")
+            or credential.get("allowTools")
+            or str(context.env.get("OPENCODE_ALLOW_TOOLS") or "").lower()
+            in ("1", "true", "yes", "on")
+        )
         return AiSettings(
             provider="opencode",
             model=str(
@@ -126,6 +133,7 @@ def resolve_ai_settings(context: NodeContext) -> AiSettings:
                 or ""
             ),
             cwd=cwd or None,
+            allow_tools=allow_tools,
             timeout=float(
                 context.params.get("timeoutSeconds")
                 or credential.get("timeoutSeconds")
@@ -154,14 +162,22 @@ def resolve_ai_settings(context: NodeContext) -> AiSettings:
     )
 
 
-def _messages_to_prompt(messages: list[dict[str, str]]) -> str:
+def _messages_to_prompt(
+    messages: list[dict[str, str]],
+    allow_tools: bool = False,
+) -> str:
     system = "\n\n".join(
         message.get("content", "") for message in messages if message.get("role") == "system"
     )
     user = "\n\n".join(
         message.get("content", "") for message in messages if message.get("role") != "system"
     )
-    instructions = "Answer directly. Do not use tools and do not modify files."
+    instructions = (
+        "You may use tools to inspect files in the working directory. "
+        "Base your answer on the actual files and do not modify them."
+        if allow_tools
+        else "Answer directly. Do not use tools and do not modify files."
+    )
     parts = [instruction for instruction in (instructions, system, user) if instruction.strip()]
     return "\n\n".join(parts)
 
@@ -234,7 +250,7 @@ def _resolve_binary(binary: str) -> str:
 
 async def opencode_run(settings: AiSettings, messages: list[dict[str, str]]) -> str:
     binary = _resolve_binary(settings.opencode_bin)
-    prompt = _messages_to_prompt(messages)
+    prompt = _messages_to_prompt(messages, allow_tools=settings.allow_tools)
 
     descriptor, temp_name = tempfile.mkstemp(prefix="opencode-prompt-", suffix=".md")
     temp_path = Path(temp_name)
@@ -246,10 +262,16 @@ async def opencode_run(settings: AiSettings, messages: list[dict[str, str]]) -> 
         arguments.extend(["--model", settings.model])
     if settings.agent:
         arguments.extend(["--agent", settings.agent])
+    if settings.allow_tools:
+        arguments.append("--auto")
     arguments.extend(
         [
             "Follow the instructions in the attached file exactly. "
-            "Answer directly and do not modify files.",
+            + (
+                "Use tools to inspect files if needed and do not modify them."
+                if settings.allow_tools
+                else "Answer directly and do not modify files."
+            ),
             "--file",
             str(temp_path),
         ]

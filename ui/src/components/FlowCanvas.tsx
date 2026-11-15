@@ -159,6 +159,8 @@ function toEdge(connection: Connection, index: number): Edge {
     targetHandle: "in",
     label: output === "main" ? undefined : output,
     className: output === "true" ? "edge-true" : output === "false" ? "edge-false" : "",
+    interactionWidth: 28,
+    deletable: true,
   };
 }
 
@@ -221,23 +223,28 @@ export function FlowCanvas({
     [onNodeMove],
   );
 
-  const handleEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      setEdges((current) => {
-        const next = applyEdgeChanges(changes, current);
-        if (changes.some((change) => change.type === "remove")) {
-          onConnectionsChange(
-            next.map((edge) => ({
-              from: edge.source,
-              to: edge.target,
-              output: (edge.sourceHandle as string | null) ?? "main",
-            })),
-          );
-        }
-        return next;
-      });
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    setEdges((current) => applyEdgeChanges(changes, current));
+  }, []);
+
+  const deleteConnections = useCallback(
+    (deletedEdges: Edge[]) => {
+      const removed = new Set(
+        deletedEdges.map(
+          (edge) =>
+            `${edge.source}->${edge.target}:${(edge.sourceHandle as string | null) ?? "main"}`,
+        ),
+      );
+      onConnectionsChange(
+        workflow.connections.filter(
+          (connection) =>
+            !removed.has(
+              `${connection.from}->${connection.to}:${connection.output ?? "main"}`,
+            ),
+        ),
+      );
     },
-    [onConnectionsChange],
+    [onConnectionsChange, workflow.connections],
   );
 
   const handleConnect = useCallback(
@@ -267,6 +274,12 @@ export function FlowCanvas({
       nodeTypes={nodeTypes}
       onNodesChange={handleNodesChange}
       onEdgesChange={handleEdgesChange}
+      onEdgesDelete={(deleted) => deleteConnections(deleted)}
+      onEdgeDoubleClick={(event, edge) => {
+        event.stopPropagation();
+        deleteConnections([edge]);
+      }}
+      deleteKeyCode={["Backspace", "Delete"]}
       onConnect={handleConnect}
       onNodesDelete={(deleted) => onDeleteNodes(deleted.map((entry) => entry.id))}
       onNodeClick={(_event, node) => onSelectNode(node.id)}

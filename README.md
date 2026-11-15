@@ -494,6 +494,39 @@ opencode models openai
 opencode models opencode-go
 ```
 
+### AI Agent для code review
+
+По умолчанию `ai.agent` не даёт модели доступ к файлам. Для ревью проекта:
+
+1. В ноде `ai.agent` выберите `Provider = opencode`.
+2. Укажите `Model`.
+3. Заполните `Working directory` — путь к проекту, например
+   `C:\Users\fodit\Desktop\QA Projects\VolgaIT_QA_SemiFinal_2026`.
+4. Включите `Allow tools`.
+5. Рекомендуется указать `opencode agent = plan` — это read-only режим.
+6. В `Prompt` напишите задачу, например:
+   `Analyze the codebase and autotests. Return strengths, risks and recommendations.`
+
+При `Allow tools` движок запускает opencode с `--auto`, чтобы инструменты
+работали без интерактивных подтверждений. Модель может читать файлы проекта.
+Используйте `agent = plan`, если не хотите, чтобы она могла менять файлы.
+
+Ответ ноды:
+
+- `text` — обычный текст ревью;
+- `json` — если выбран `Response format = JSON`.
+
+Отдельное поле для ответа не нужно. Для отчёта можно преобразовать:
+
+```json
+{
+  "title": "Code review",
+  "markdown": "{{ $json.text }}"
+}
+```
+
+и передать в `core.merge` вместе с результатами тестов, а затем в `qa.report`.
+
 ### Способ 2: через .env
 
 Скопируйте `.env.example` в `.env` и задайте значения. После изменения
@@ -663,6 +696,36 @@ Retry повторяет только эту ноду и следующие за
 в SQLite; если он больше 4 МБ, повтор недоступен, нужно запустить workflow заново.
 
 Для listener-режима Retry применяется к дочернему запуску, в котором упала нода.
+
+## Merge нескольких веток
+
+Executor поддерживает схождение нескольких веток в одну ноду: целевая нода
+запускается один раз и получает items из всех входящих веток.
+
+Для сборки одного отчёта из нескольких веток:
+
+1. Добавьте `core.merge` перед `qa.report`.
+2. Выберите режим:
+   - `Report` - основной отчёт остаётся главным, остальные ветки добавляются
+     в `extraSections`;
+   - `Merge objects` - JSON-объекты сливаются в один (последний перекрывает
+     совпавшие ключи);
+   - `Append as items array` - всё складывается в `items`.
+3. Соедините выходы обеих веток со входом `core.merge`.
+
+`qa.report` также умеет принимать несколько входов напрямую: он выбирает
+основной отчёт, а остальные inputs добавляет секциями.
+
+Пример: `examples/merge-report.workflow.json`.
+
+```text
+testResults -> AI summary ─────┐
+                               ├-> Merge branches -> Build report -> Save report
+testResults -> Autotest review ┘
+```
+
+Если ветка вернула `markdown`, она добавляется как готовая секция. Если вернула
+`review`, `text` или произвольный JSON, он попадёт в отчёт как JSON-блок.
 
 ## Пайплайн QA
 

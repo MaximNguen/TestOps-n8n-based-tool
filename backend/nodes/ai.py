@@ -142,6 +142,23 @@ def _register_agent() -> None:
                     ],
                 ),
                 NodeProperty(name="temperature", display_name="Temperature", type="number", default=0.2),
+                NodeProperty(
+                    name="cwd",
+                    display_name="Working directory",
+                    type="string",
+                    default="",
+                    description="opencode working directory. Set the project path for code review.",
+                ),
+                NodeProperty(
+                    name="allowTools",
+                    display_name="Allow tools",
+                    type="boolean",
+                    default=False,
+                    description=(
+                        "Let opencode inspect files via tools (adds --auto). "
+                        "Use a read-only agent such as plan."
+                    ),
+                ),
             ],
             execute=execute,
         )

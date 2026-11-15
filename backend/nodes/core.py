@@ -13,6 +13,8 @@ from engine.expressions import resolve_value, wrap
 from engine.types import Item, NodeContext, NodeDefinition, NodeProperty
 from engine.registry import register as register_node
 
+from .qa import _report_score, _section_from_item
+
 SAFE_BUILTINS: dict[str, Any] = {
     "abs": abs,
     "all": all,
@@ -416,8 +418,68 @@ def _register_http() -> None:
     )
 
 
+def _register_merge() -> None:
+    def execute(context: NodeContext) -> dict[str, list[Item]]:
+        inputs = context.input or [Item()]
+        mode = str(context.params.get("mode") or "report")
+
+        if mode == "append":
+            return {
+                "main": [Item(json={"items": [item.json for item in inputs]})]
+            }
+
+        if mode == "merge":
+            merged: dict[str, Any] = {}
+            for item in inputs:
+                merged.update(item.json)
+            return {"main": [Item(json=merged)]}
+
+        primary_index = max(
+            range(len(inputs)),
+            key=lambda index: _report_score(inputs[index].json),
+        )
+        report = dict(inputs[primary_index].json)
+        extras = list(report.get("extraSections") or [])
+        for index, item in enumerate(inputs):
+            if index == primary_index:
+                continue
+            section = _section_from_item(item.json, index)
+            if section:
+                extras.append(section)
+        if extras:
+            report["extraSections"] = extras
+        return {"main": [Item(json=report)]}
+
+    register_node(
+        NodeDefinition(
+            type="core.merge",
+            display_name="Merge branches",
+            description=(
+                "Combine items from multiple branches into one item. "
+                "Report mode keeps the main report and adds other branches as report sections."
+            ),
+            group="transform",
+            properties=[
+                NodeProperty(
+                    name="mode",
+                    display_name="Mode",
+                    type="options",
+                    default="report",
+                    options=[
+                        {"label": "Report (main + extra sections)", "value": "report"},
+                        {"label": "Merge objects", "value": "merge"},
+                        {"label": "Append as items array", "value": "append"},
+                    ],
+                )
+            ],
+            execute=execute,
+        )
+    )
+
+
 def register_nodes() -> None:
     _register_set()
     _register_if()
     _register_code()
     _register_http()
+    _register_merge()

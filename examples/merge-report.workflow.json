@@ -1,0 +1,74 @@
+{
+  "name": "QA: merged report from two branches",
+  "description": "Two branches (test results and autotest review) are merged into one report.",
+  "active": true,
+  "nodes": [
+    {
+      "id": "trigger",
+      "type": "trigger.testResults",
+      "name": "Test results",
+      "position": { "x": 80, "y": 180 },
+      "parameters": {
+        "path": "qa/merged-results",
+        "method": "POST",
+        "source": "auto",
+        "sample": {
+          "results": [
+            { "name": "GET /health", "method": "GET", "url": "https://api.demo.local/health", "status": 200, "passed": true },
+            { "name": "GET /users", "method": "GET", "url": "https://api.demo.local/users", "status": 500, "passed": false, "error": "Internal Server Error" },
+            { "name": "GET /products", "method": "GET", "url": "https://api.demo.local/products", "status": 200, "passed": false, "error": "Schema mismatch: missing price" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "ai.summarizeResults",
+      "name": "AI summary",
+      "position": { "x": 400, "y": 80 },
+      "parameters": {
+        "useAi": false,
+        "language": "ru"
+      }
+    },
+    {
+      "id": "review",
+      "type": "core.code",
+      "name": "Autotest review",
+      "position": { "x": 400, "y": 300 },
+      "parameters": {
+        "mode": "all",
+        "code": "return [{\"title\": \"Autotest review\", \"markdown\": \"## Autotest review\\n\\n- Проверить флаки в UI-тестах.\\n- Обновить тестовые токены.\\n- Сверить схему ответа /products с OpenAPI.\"}]"
+      }
+    },
+    {
+      "id": "merge",
+      "type": "core.merge",
+      "name": "Merge branches",
+      "position": { "x": 720, "y": 180 },
+      "parameters": { "mode": "report" }
+    },
+    {
+      "id": "report",
+      "type": "qa.report",
+      "name": "Build report",
+      "position": { "x": 1000, "y": 180 },
+      "parameters": { "title": "Merged QA report" }
+    },
+    {
+      "id": "publish",
+      "type": "qa.publish",
+      "name": "Save report",
+      "position": { "x": 1280, "y": 180 },
+      "parameters": { "channel": "file", "path": "", "title": "" }
+    }
+  ],
+  "connections": [
+    { "from": "trigger", "to": "summarize", "output": "main" },
+    { "from": "trigger", "to": "review", "output": "main" },
+    { "from": "summarize", "to": "merge", "output": "main" },
+    { "from": "review", "to": "merge", "output": "main" },
+    { "from": "merge", "to": "report", "output": "main" },
+    { "from": "report", "to": "publish", "output": "main" }
+  ]
+}

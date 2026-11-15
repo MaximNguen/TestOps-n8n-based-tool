@@ -11,7 +11,12 @@ from engine.executor import Executor
 from engine.expressions import create_scope, resolve_value
 from engine.types import Item, NodeContext, NodeSpec, Workflow
 from listener import ListenerManager
-from nodes.ai_backend import _merge_chunks, _parse_opencode_events, resolve_ai_settings
+from nodes.ai_backend import (
+    _merge_chunks,
+    _messages_to_prompt,
+    _parse_opencode_events,
+    resolve_ai_settings,
+)
 from nodes.qa import _render_markdown
 from nodes.triggers import normalize_tests
 from store.crypto import SecretBox
@@ -176,6 +181,84 @@ def test_file_trigger_reads_pytest_json(executor: Executor, tmp_path: Path) -> N
     assert output["source"] == "pytest"
 
 
+def test_report_accepts_multiple_input_branches(executor: Executor) -> None:
+    workflow = make_workflow(
+        nodes=[
+            {
+                "id": "trigger",
+                "type": "trigger.manual",
+                "name": "Manual",
+                "parameters": {},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "results",
+                "type": "core.set",
+                "name": "Results",
+                "parameters": {
+                    "values": {
+                        "summary": {
+                            "total": 1,
+                            "passed": 0,
+                            "failed": 1,
+                            "skipped": 0,
+                            "passRate": 0,
+                        },
+                        "tests": [
+                            {
+                                "name": "GET /users",
+                                "passed": False,
+                                "error": "HTTP 500",
+                            }
+                        ],
+                    }
+                },
+                "position": {"x": 200, "y": -80},
+            },
+            {
+                "id": "review",
+                "type": "core.set",
+                "name": "Review",
+                "parameters": {
+                    "values": {
+                        "title": "Autotest review",
+                        "markdown": "## Autotest review\n\nLooks flaky.",
+                    }
+                },
+                "position": {"x": 200, "y": 80},
+            },
+            {
+                "id": "merge",
+                "type": "core.merge",
+                "name": "Merge",
+                "parameters": {"mode": "report"},
+                "position": {"x": 400, "y": 0},
+            },
+            {
+                "id": "report",
+                "type": "qa.report",
+                "name": "Report",
+                "parameters": {"title": "Merged report"},
+                "position": {"x": 600, "y": 0},
+            },
+        ],
+        connections=[
+            {"from": "trigger", "to": "results"},
+            {"from": "trigger", "to": "review"},
+            {"from": "results", "to": "merge"},
+            {"from": "review", "to": "merge"},
+            {"from": "merge", "to": "report"},
+        ],
+    )
+    run = asyncio.run(executor.run(workflow, trigger="manual"))
+    assert run.status == "success"
+    report_run = next(item for item in run.node_runs if item.node_id == "report")
+    markdown = report_run.output["main"][0]["json"]["markdown"]
+    assert "## Summary" in markdown
+    assert "## Autotest review" in markdown
+    assert "Looks flaky." in markdown
+
+
 def test_event_callback_receives_all_events() -> None:
     bus = EventBus()
     received: list[dict] = []
@@ -338,6 +421,28 @@ def test_anthropic_provider_settings() -> None:
     assert settings.base_url == "https://api.anthropic.com"
     assert settings.model == "claude-sonnet-4-5"
     assert settings.api_key == "sk-ant"
+
+
+def test_opencode_tool_settings() -> None:
+    context = _ai_context(
+        {
+            "__credentialType": "opencode",
+            "model": "opencode-go/deepseek-v4.1-flash",
+            "cwd": r"C:\Users\fodit\Desktop\QA Projects\VolgaIT_QA_SemiFinal_2026",
+        }
+    )
+    context.params["allowTools"] = True
+    settings = resolve_ai_settings(context)
+    assert settings.allow_tools is True
+    assert settings.cwd.endswith("VolgaIT_QA_SemiFinal_2026")
+    prompt = _messages_to_prompt(
+        [{"role": "user", "content": "Review the code"}],
+        allow_tools=True,
+    )
+    assert "may use tools" in prompt
+    assert "Do not use tools" in _messages_to_prompt(
+        [{"role": "user", "content": "Review the code"}]
+    )
 
 
 def test_opencode_credential_wins_over_env() -> None:
